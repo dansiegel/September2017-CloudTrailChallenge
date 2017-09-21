@@ -85,10 +85,23 @@ namespace CloudTrailer
             foreach(var cloudTrailEvent in cloudTrailEvents)
             {
                 var userName = cloudTrailEvent.RequestParameters.FirstOrDefault(p => p.Key == "userName").Value.ToString();
-                var response = await IamClient.DeleteUserAsync(new DeleteUserRequest(userName));
-                var message = $"Delete user: {userName} - Status: {response.HttpStatusCode}";
-                LambdaLogger.Log(message);
-                await SnsClient.PublishAsync("arn:aws:sns:us-west-2:481999251613:FooBar", message);
+                try
+                {
+                    var response = await IamClient.DeleteUserAsync(new DeleteUserRequest(userName));
+                    var message = $"Delete user: {userName} - Status: {response.HttpStatusCode}";
+                    LambdaLogger.Log(message);
+                    await SnsClient.PublishAsync("arn:aws:sns:us-west-2:481999251613:FooBar", message);
+                }
+                catch(AggregateException ae)
+                {
+                    LambdaLogger.Log(ae.Message);
+                    await SnsClient.PublishAsync("arn:aws:sns:us-west-2:481999251613:FooBar", $"Error deleting {userName}: {ae.Message}");
+                }
+                catch(Exception e)
+                {
+                    LambdaLogger.Log($"{e.GetType().Name} - {e.Message}");
+                    await SnsClient.PublishAsync("arn:aws:sns:us-west-2:481999251613:FooBar", $"An unexpected error occurred while deleting {userName}: {e.Message}");
+                }
             }
         }
 
