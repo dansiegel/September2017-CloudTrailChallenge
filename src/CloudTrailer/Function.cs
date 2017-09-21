@@ -49,10 +49,47 @@ namespace CloudTrailer
             context.Logger.LogLine(JsonConvert.SerializeObject(evnt));
 
             // ### Level 2 - Retrieve Logs from S3
+            var message = JsonConvert.DeserializeObject<CloudTrailMessage>(evnt.Records.First().Sns.Message);
+            LambdaLogger.Log($"S3 Bucket: {message.S3Bucket}");
+            LambdaLogger.Log($"S3 Object Key: {message.S3ObjectKey.First()}");
+            var objectResponse = await S3Client.GetObjectAsync(message.S3Bucket, message.S3ObjectKey.First());
+            var data = ReadFully(objectResponse.ResponseStream);
+            var records = await ExtractCloudTrailRecordsAsync(context.Logger, data);
+            foreach(var record in records.Records)
+            {
+                LambdaLogger.Log("Another FooBar record");
+                LambdaLogger.Log(JsonConvert.SerializeObject(record));
+                //LambdaLogger.Log($"{record.EventName}: {record.EventTime} - {record.SourceIpAddress}");
+            }
 
             // ### Level 3 - Filter for specific events and send alerts
+            var alerts = records.Records.Where(r => r.EventName == "CreateUser" && r.RequestParameters.Any(p => p.Key == "userName" && p.Value.ToString().StartsWith("foo", StringComparison.OrdinalIgnoreCase)));
 
-            // ### Boss level - Take mitigating action
+            if(alerts.Any())
+            {
+                var response = await SnsClient.PublishAsync("arn:aws:sns:us-west-2:481999251613:FooBar", "People be creating some Foo users...");
+                
+                LambdaLogger.Log("Send Sns Message");
+                // ### Boss level - Take mitigating action
+                await BossAsync(alerts);
+            }
+            else
+            {
+                LambdaLogger.Log("No alerts were found this time... that was close...");
+            }
+
+        }
+
+        private async Task BossAsync(IEnumerable<CloudTrailEvent> cloudTrailEvents)
+        {
+            foreach(var cloudTrailEvent in cloudTrailEvents)
+            {
+                var userName = cloudTrailEvent.RequestParameters.FirstOrDefault(p => p.Key == "userName").Value.ToString();
+                var response = await IamClient.DeleteUserAsync(new DeleteUserRequest(userName));
+                var message = $"Delete user: {userName} - Status: {response.HttpStatusCode}";
+                LambdaLogger.Log(message);
+                await SnsClient.PublishAsync("arn:aws:sns:us-west-2:481999251613:FooBar", message);
+            }
         }
 
 
@@ -79,6 +116,21 @@ namespace CloudTrailer
                 var header = new byte[GZipHeaderBytes.Length];
                 Array.Copy(bytes, header, header.Length);
                 return header.SequenceEqual(GZipHeaderBytes);
+            }
+        }
+
+        // FROM: https://stackoverflow.com/questions/221925/creating-a-byte-array-from-a-stream
+        public static byte[] ReadFully(Stream input)
+        {
+            byte[] buffer = new byte[16*1024];
+            using (MemoryStream ms = new MemoryStream())
+            {
+                int read;
+                while ((read = input.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    ms.Write(buffer, 0, read);
+                }
+                return ms.ToArray();
             }
         }
     }
